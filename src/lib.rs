@@ -29,7 +29,7 @@ use core::ops::{Index as OpsIndex, IndexMut as OpsIndexMut};
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Index {
     slot: u32,
-    gen: NonZeroU32,
+    generation: NonZeroU32,
 }
 
 impl Index {
@@ -42,19 +42,19 @@ impl Index {
     /// Returns the raw generation of this index.
     #[inline]
     pub fn generation(&self) -> u32 {
-        self.gen.get()
+        self.generation.get()
     }
 
     /// Creates an Index from raw parts.
     /// Returns None if generation is 0.
     pub fn from_raw_parts(slot: u32, generation: u32) -> Option<Self> {
-        NonZeroU32::new(generation).map(|gen| Self { slot, gen })
+        NonZeroU32::new(generation).map(|generation| Self { slot, generation })
     }
 }
 
 impl fmt::Debug for Index {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Index({}v{})", self.slot, self.gen)
+        write!(f, "Index({}v{})", self.slot, self.generation)
     }
 }
 
@@ -62,13 +62,13 @@ impl fmt::Debug for Index {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 enum Entry<T> {
-    /// A free slot. The `gen` is the generation the *next* occupant will get.
+    /// A free slot. The `generation` is the generation the *next* occupant will get.
     Free {
         next_free: Option<u32>,
-        gen: NonZeroU32,
+        generation: NonZeroU32,
     },
-    /// An occupied slot. The `gen` is the current generation of the value.
-    Occupied { gen: NonZeroU32, value: T },
+    /// An occupied slot. The `generation` is the current generation of the value.
+    Occupied { generation: NonZeroU32, value: T },
 }
 
 impl<T> Entry<T> {
@@ -76,8 +76,8 @@ impl<T> Entry<T> {
     #[allow(dead_code)]
     fn generation(&self) -> NonZeroU32 {
         match self {
-            Entry::Free { gen, .. } => *gen,
-            Entry::Occupied { gen, .. } => *gen,
+            Entry::Free { generation, .. } => *generation,
+            Entry::Occupied { generation, .. } => *generation,
         }
     }
 }
@@ -167,12 +167,16 @@ impl<T> Arena<T> {
         self.len += 1;
 
         if let Some(slot) = self.free_head {
-            if let Some(Entry::Free { next_free, gen }) = self.items.get_mut(slot as usize) {
-                let gen = *gen;
+            if let Some(Entry::Free {
+                next_free,
+                generation,
+            }) = self.items.get_mut(slot as usize)
+            {
+                let generation = *generation;
                 self.free_head = *next_free;
-                self.items[slot as usize] = Entry::Occupied { gen, value };
+                self.items[slot as usize] = Entry::Occupied { generation, value };
 
-                return Index { slot, gen };
+                return Index { slot, generation };
             } else {
                 panic!("Corrupted free list in Arena");
             }
@@ -183,10 +187,10 @@ impl<T> Arena<T> {
             .len()
             .try_into()
             .expect("Arena overflow: too many items");
-        let gen = NonZeroU32::new(1).unwrap();
-        self.items.push(Entry::Occupied { gen, value });
+        let generation = NonZeroU32::new(1).unwrap();
+        self.items.push(Entry::Occupied { generation, value });
 
-        Index { slot, gen }
+        Index { slot, generation }
     }
 
     /// Removes the value at the given index and returns it.
@@ -195,8 +199,8 @@ impl<T> Arena<T> {
         let entry = self.items.get_mut(index.slot as usize)?;
 
         match entry {
-            Entry::Occupied { gen, .. } if *gen == index.gen => {
-                let next_gen_val = gen.get().wrapping_add(1);
+            Entry::Occupied { generation, .. } if *generation == index.generation => {
+                let next_gen_val = generation.get().wrapping_add(1);
                 let next_gen =
                     NonZeroU32::new(if next_gen_val == 0 { 1 } else { next_gen_val }).unwrap();
 
@@ -204,7 +208,7 @@ impl<T> Arena<T> {
                     entry,
                     Entry::Free {
                         next_free: self.free_head,
-                        gen: next_gen,
+                        generation: next_gen,
                     },
                 );
 
@@ -224,7 +228,9 @@ impl<T> Arena<T> {
     /// Returns a reference to the value at the given index.
     pub fn get(&self, index: Index) -> Option<&T> {
         match self.items.get(index.slot as usize) {
-            Some(Entry::Occupied { gen, value }) if *gen == index.gen => Some(value),
+            Some(Entry::Occupied { generation, value }) if *generation == index.generation => {
+                Some(value)
+            }
             _ => None,
         }
     }
@@ -232,7 +238,9 @@ impl<T> Arena<T> {
     /// Returns a mutable reference to the value at the given index.
     pub fn get_mut(&mut self, index: Index) -> Option<&mut T> {
         match self.items.get_mut(index.slot as usize) {
-            Some(Entry::Occupied { gen, value }) if *gen == index.gen => Some(value),
+            Some(Entry::Occupied { generation, value }) if *generation == index.generation => {
+                Some(value)
+            }
             _ => None,
         }
     }
@@ -248,7 +256,13 @@ impl<T> Arena<T> {
     /// Returns the value and the *current* valid `Index` for that slot.
     pub fn get_unknown_gen(&self, slot: u32) -> Option<(&T, Index)> {
         match self.items.get(slot as usize) {
-            Some(Entry::Occupied { gen, value }) => Some((value, Index { slot, gen: *gen })),
+            Some(Entry::Occupied { generation, value }) => Some((
+                value,
+                Index {
+                    slot,
+                    generation: *generation,
+                },
+            )),
             _ => None,
         }
     }
@@ -301,11 +315,11 @@ impl<'a, T> Iterator for Iter<'a, T> {
     type Item = (Index, &'a T);
     fn next(&mut self) -> Option<Self::Item> {
         for (i, entry) in self.enumerate.by_ref() {
-            if let Entry::Occupied { gen, value } = entry {
+            if let Entry::Occupied { generation, value } = entry {
                 return Some((
                     Index {
                         slot: i as u32,
-                        gen: *gen,
+                        generation: *generation,
                     },
                     value,
                 ));
@@ -324,11 +338,11 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     // noinspection DuplicatedCode
     fn next(&mut self) -> Option<Self::Item> {
         for (i, entry) in self.enumerate.by_ref() {
-            if let Entry::Occupied { gen, value } = entry {
+            if let Entry::Occupied { generation, value } = entry {
                 return Some((
                     Index {
                         slot: i as u32,
-                        gen: *gen,
+                        generation: *generation,
                     },
                     value,
                 ));
@@ -350,10 +364,10 @@ impl<'a, T> Iterator for Drain<'a, T> {
             let slot_idx = self.slot;
             self.slot += 1;
 
-            if let Some(Entry::Occupied { gen, .. }) = self.arena.items.get(slot_idx) {
+            if let Some(Entry::Occupied { generation, .. }) = self.arena.items.get(slot_idx) {
                 let idx = Index {
                     slot: slot_idx as u32,
-                    gen: *gen,
+                    generation: *generation,
                 };
                 if let Some(val) = self.arena.remove(idx) {
                     return Some((idx, val));
