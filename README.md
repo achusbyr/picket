@@ -9,7 +9,7 @@ Picket provides a `Vec`-like data structure (`Arena`) where items are accessed v
 
 ## Features
 
-*   **Lightweight**: `Index` is 8 bytes. `Option<Index>` is also 8 bytes using `NonZeroU32`.
+*   **Lightweight**: `Index` is compact (e.g., 8 bytes for `u32` arenas). `Option<Index>` is the same size as `Index` using `NonZero` optimization.
 *   **`serde` Support**: The `Arena` can be serialized and deserialized through the `serde` feature.
 *   **no_std**: Supports `no_std` environments. (`std` is enabled by default)
 
