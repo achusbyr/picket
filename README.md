@@ -16,7 +16,7 @@ Picket provides a `Vec`-like data structure (`Arena`) where items are accessed v
 ## Usage
 
 ```rust
-use picket::Arena;
+use picket::u32::Arena;
 
 fn main() {
     let mut arena = Arena::new();
